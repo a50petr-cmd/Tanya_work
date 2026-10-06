@@ -315,12 +315,24 @@ function splitMessage(text) {
 }
 
 async function telegramCall(token, method, payload) {
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const body = await response.json();
+  const clean = String(token || "").trim();
+  let response;
+  try {
+    response = await fetch(`https://api.telegram.org/bot${clean}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+  } catch (error) {
+    throw new Error(`Telegram ${method} network: ${String(error)}`);
+  }
+  const text = await response.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`Telegram ${method} HTTP ${response.status}: ${text.slice(0, 300)}`);
+  }
   if (!body.ok) throw new Error(`Telegram ${method} failed: ${JSON.stringify(body)}`);
   return body;
 }
@@ -473,12 +485,22 @@ async function setupTelegram(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) {
     return Response.json({ detail: "TELEGRAM_BOT_TOKEN is empty" }, { status: 400 });
   }
-  const webhookUrl = `${url.origin}/webhook/telegram`;
-  const body = await telegramCall(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
-    url: webhookUrl,
-    allowed_updates: ["message"],
-  });
-  return Response.json({ ok: true, webhook: webhookUrl, telegram: body.result });
+  try {
+    const me = await telegramCall(env.TELEGRAM_BOT_TOKEN, "getMe", {});
+    const webhookUrl = `${url.origin}/webhook/telegram`;
+    const body = await telegramCall(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
+      url: webhookUrl,
+      allowed_updates: ["message"],
+    });
+    return Response.json({
+      ok: true,
+      bot: me.result?.username || null,
+      webhook: webhookUrl,
+      telegram: body.result,
+    });
+  } catch (error) {
+    return Response.json({ ok: false, detail: String(error.message || error) }, { status: 502 });
+  }
 }
 
 export default {
