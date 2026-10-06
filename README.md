@@ -1,55 +1,56 @@
 # Сводка отчётов
 
-Сотрудники заполняют [Яндекс Форму](https://forms.yandex.ru/u/6ac545514936394846dec049). Этот сервис принимает ответ, считает ЧКД и в 18:00 по Москве отправляет руководителю одну сводку в Telegram-бот `@Sberteam_reports_bot`.
+Сотрудники заполняют [Яндекс Форму](https://forms.yandex.ru/u/6ac545514936394846dec049). Бесплатный воркер на Cloudflare принимает ответ, считает ЧКД и в 18:00 по Москве отправляет сводку в `@Sberteam_reports_bot`.
 
 В форме сотрудник пишет исходное число. В сводке:
 
 - **ЧКД Благо** = число × 0,8 / 1,2
 - **ЧКД СберЗдоровье** = число × 0,65
 
-Результат округляется до двух знаков. Рядом остаётся введённое число.
+Отдельный VPS не нужен. Яндекс Формы умеют слать запросы только по IPv6, у Cloudflare он есть.
 
-## Что нужно для запуска
+## 1. Создать воркер
 
-1. Токен бота `@Sberteam_reports_bot` из BotFather.
-2. Список из десяти фамилий в `EMPLOYEES`, через запятую.
-3. Сервер **с IPv6 и HTTPS**. Яндекс Формы отправляют HTTP-запросы только по IPv6.
-4. Секрет для вебхука, тот же в `.env` и в заголовке формы.
+1. Откройте [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) и зарегистрируйтесь.
+2. Слева выберите **Workers & Pages** → **Create** → **Create Worker**.
+3. Имя: `sberteam-reports`. Нажмите **Deploy**, затем **Edit code**.
+4. Удалите шаблон и вставьте содержимое файла [`cloudflare/worker.js`](cloudflare/worker.js). Нажмите **Deploy**.
 
-Скопируйте `.env.example` в `.env` и заполните:
+## 2. Хранилище и секреты
+
+1. В разделе **Workers** откройте **KV** → **Create a namespace**. Имя: `REPORTS`.
+2. Вернитесь в воркер `sberteam-reports` → **Settings** → **Bindings** → **Add** → **KV Namespace**. Variable name: `REPORTS`, namespace: созданный. Save.
+3. Там же **Variables and Secrets**:
+
+| Имя | Тип | Значение |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Secret | токен `@Sberteam_reports_bot` |
+| `FORMS_WEBHOOK_SECRET` | Secret | любая длинная случайная строка |
+| `EMPLOYEES` | Text | десять фамилий через запятую, как в форме |
+| `TELEGRAM_CHAT_ID` | Text | можно пустым |
+
+4. **Triggers** → **Cron Triggers** → Add: `0 15 * * *` (это 18:00 по Москве).
+
+Скопируйте адрес воркера вида `https://sberteam-reports.<аккаунт>.workers.dev`.
+
+## 3. Подключить Telegram и форму
+
+Подставить секрет и адрес:
 
 ```bash
-cp .env.example .env
+curl "https://sberteam-reports.<аккаунт>.workers.dev/setup-telegram?secret=СЕКРЕТ"
+curl "https://sberteam-reports.<аккаунт>.workers.dev/health"
 ```
 
-```
-TELEGRAM_BOT_TOKEN=токен_бота
-TELEGRAM_CHAT_ID=
-FORMS_WEBHOOK_SECRET=случайная_строка
-EMPLOYEES=Иванов, Петрова, Соколова Анна
-```
+Второе должно вернуть `{"status":"ok"}`.
 
-`TELEGRAM_CHAT_ID` можно оставить пустым: руководитель пишет боту `/start`, сервис запоминает чат. Если chat_id уже известен, укажите его, тогда бот отвечает только туда.
+В форме **Интеграции → API → Запрос заданным методом**:
 
-## Запуск
-
-```bash
-docker compose up --build -d
-```
-
-Проверка: `curl http://127.0.0.1:8080/health` должен вернуть `{"status":"ok"}`.
-
-Публичный адрес вебхука: `https://ВАШ_ДОМЕН/webhook/forms`.
-
-## Настройка формы
-
-В опубликованной форме откройте **Интеграции → API → Запрос заданным методом**.
-
-- Адрес: `https://ВАШ_ДОМЕН/webhook/forms`
+- Адрес: `https://sberteam-reports.<аккаунт>.workers.dev/webhook/forms`
 - Метод: `POST`
 - Заголовок `Content-Type`: `application/json`
-- Заголовок `X-Webhook-Secret`: то же значение, что в `.env`
-- Тело запроса — JSON ниже. В каждое значение вставьте переменную **Ответ на вопрос** и выберите нужный вопрос. Для чисел кавычки не ставьте.
+- Заголовок `X-Webhook-Secret`: тот же секрет
+- Тело запроса. В каждое значение вставьте переменную **Ответ на вопрос**:
 
 ```json
 {
@@ -70,22 +71,21 @@ docker compose up --build -d
 }
 ```
 
-Сохраните действие и отправьте тестовый ответ. В форме откройте **Выполненные интеграции**: должен быть код 200.
+Руководитель пишет боту `/start`. Затем отправьте тестовую анкету и в форме откройте **Выполненные интеграции**: нужен код 200.
 
 ## Команды руководителя
 
 - `/start` — привязать чат
-- `/today` — сводка за сегодня, даже до 18:00
+- `/today` — сводка за сегодня
 - `/missing` — кто не сдал
 - `/date 06.10` — сводка за дату
-
-Если сотрудник отправит форму после 18:00, руководителю уйдёт отдельное дополнение.
 
 ## Локальные тесты
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pytest
+python3 -m pip install -r requirements.txt
+python3 -m pytest
+node --test tests/test_worker_logic.mjs
 ```
+
+Docker с `docker compose up --build` остаётся запасным вариантом, если появится своя ВМ с IPv6.
