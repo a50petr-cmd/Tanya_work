@@ -7,6 +7,7 @@ import {
   chkdBlago,
   chkdSberhealth,
   formatMetricLine,
+  normalizeIncomingText,
   parseReport,
 } from "../cloudflare/worker.js";
 
@@ -77,4 +78,11 @@ test("late report is after 18:00 Moscow", () => {
   assert.equal(afterDeadline("2026-10-06", late, 18, 0, null), true);
   const early = new Date("2026-10-06T12:00:00Z");
   assert.equal(afterDeadline("2026-10-06", early, 18, 0, null), false);
+});
+
+test("keyboard labels map to commands", () => {
+  assert.equal(normalizeIncomingText("Сегодня"), "/today");
+  assert.equal(normalizeIncomingText("Не сдали"), "/missing");
+  assert.equal(normalizeIncomingText("За дату"), "/date");
+  assert.equal(normalizeIncomingText("Помощь"), "/start");
 });

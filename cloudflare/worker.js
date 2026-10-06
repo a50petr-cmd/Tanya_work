@@ -337,15 +337,52 @@ async function telegramCall(token, method, payload) {
   return body;
 }
 
-async function sendTelegram(env, chatId, text) {
+const BOT_COMMANDS = [
+  { command: "start", description: "Меню и привязка чата" },
+  { command: "today", description: "Сводка за сегодня" },
+  { command: "missing", description: "Кто не сдал" },
+  { command: "date", description: "Сводка за дату: /date 06.10" },
+];
+
+const MENU_KEYBOARD = {
+  keyboard: [
+    [{ text: "Сегодня" }, { text: "Не сдали" }],
+    [{ text: "За дату" }, { text: "Помощь" }],
+  ],
+  resize_keyboard: true,
+  is_persistent: true,
+};
+
+const TEXT_ALIASES = {
+  сегодня: "/today",
+  "не сдали": "/missing",
+  "за дату": "/date",
+  помощь: "/start",
+};
+
+export function normalizeIncomingText(text) {
+  const alias = TEXT_ALIASES[String(text).trim().toLowerCase()];
+  return alias || text;
+}
+
+async function setupBotMenu(env) {
+  await telegramCall(env.TELEGRAM_BOT_TOKEN, "setMyCommands", { commands: BOT_COMMANDS });
+  await telegramCall(env.TELEGRAM_BOT_TOKEN, "setChatMenuButton", { menu_button: { type: "commands" } });
+}
+
+async function sendTelegram(env, chatId, text, extra = {}) {
   if (!env.TELEGRAM_BOT_TOKEN || !chatId) return;
-  for (const chunk of splitMessage(text)) {
-    await telegramCall(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+  const chunks = splitMessage(text);
+  for (const [index, chunk] of chunks.entries()) {
+    const payload = {
       chat_id: chatId,
       text: chunk,
       parse_mode: "HTML",
       disable_web_page_preview: true,
-    });
+      ...extra,
+    };
+    if (index < chunks.length - 1) delete payload.reply_markup;
+    await telegramCall(env.TELEGRAM_BOT_TOKEN, "sendMessage", payload);
   }
 }
 
@@ -389,11 +426,17 @@ async function summaryFor(env, reportDate) {
 
 async function handleCommand(env, chatId, text) {
   const allowed = env.TELEGRAM_CHAT_ID;
+  text = normalizeIncomingText(text);
   if (text.startsWith("/start")) {
     if (allowed && chatId !== allowed) return "Нет доступа.";
     await env.REPORTS.put("settings:telegram_chat_id", chatId);
+    try {
+      await setupBotMenu(env);
+    } catch (error) {
+      console.error("setup bot menu failed", error);
+    }
     return (
-      "Бот сводки отчётов.\n" +
+      "Бот сводки отчётов. Команды в меню слева и на кнопках внизу.\n" +
       "/today — сводка за сегодня\n" +
       "/missing — кто не сдал\n" +
       "/date 06.10 — сводка за дату"
@@ -465,7 +508,10 @@ async function handleTelegram(request, env) {
   const chatId = String(message.chat?.id || "");
   if (!text || !chatId) return Response.json({ ok: true });
   const reply = await handleCommand(env, chatId, text);
-  if (reply) await sendTelegram(env, chatId, reply);
+  if (reply) {
+    const showMenu = normalizeIncomingText(text).startsWith("/start");
+    await sendTelegram(env, chatId, reply, showMenu ? { reply_markup: MENU_KEYBOARD } : {});
+  }
   return Response.json({ ok: true });
 }
 
@@ -492,11 +538,13 @@ async function setupTelegram(request, env) {
       url: webhookUrl,
       allowed_updates: ["message"],
     });
+    await setupBotMenu(env);
     return Response.json({
       ok: true,
       bot: me.result?.username || null,
       webhook: webhookUrl,
       telegram: body.result,
+      commands: BOT_COMMANDS,
     });
   } catch (error) {
     return Response.json({ ok: false, detail: String(error.message || error) }, { status: 502 });
