@@ -82,3 +82,37 @@ def build_supplement(row: dict[str, Any], submitted_at: datetime, tz: ZoneInfo) 
         f"{escape(row['employee'])} сдал отчёт в {local.strftime('%H:%M')}"
     )
     return title + "\n\n" + format_report_block(row, 1)
+
+
+def sum_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
+    totals = {field: 0 for field, _label in METRIC_LABELS}
+    for row in rows:
+        for field, _label in METRIC_LABELS:
+            totals[field] += int(row[field] or 0)
+    return totals
+
+
+def build_totals(
+    report_date: date,
+    rows: list[dict[str, Any]],
+    missing: list[str],
+    expected_count: int,
+) -> str:
+    header = [f"<b>Сводный отчёт за {format_ru_date(report_date)}</b>"]
+    if expected_count:
+        header.append(f"Сдали {len(rows)} из {expected_count}")
+    else:
+        header.append(f"Сдали {len(rows)}")
+    if missing:
+        header.append("Не сдали: " + ", ".join(escape(name) for name in missing))
+    elif expected_count and len(rows) >= expected_count:
+        header.append("Не сдали: никого")
+    if not rows:
+        return "\n".join(header) + "\n\nОтчётов пока нет."
+    totals = sum_metrics(rows)
+    lines = ["<b>Итого</b>"]
+    for field, _label in METRIC_LABELS:
+        lines.append(format_metric_line(field, totals[field]))
+    submitted = ", ".join(escape(row["employee"]) for row in rows)
+    lines.extend(["", f"Сдали: {submitted}"])
+    return "\n".join(header) + "\n\n" + "\n".join(lines)

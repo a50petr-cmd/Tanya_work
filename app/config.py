@@ -9,7 +9,7 @@ def _split_employees(raw: str) -> tuple[str, ...]:
     names = []
     for part in raw.split(","):
         name = " ".join(part.split())
-        if name:
+        if name and name != "-":
             names.append(name)
     return tuple(names)
 

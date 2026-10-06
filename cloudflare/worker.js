@@ -250,12 +250,41 @@ export function splitEmployees(raw) {
   return String(raw || "")
     .split(",")
     .map((part) => part.trim().replace(/\s+/g, " "))
-    .filter(Boolean);
+    .filter((name) => name && name !== "-");
 }
 
 export function missingEmployees(rows, employees) {
   const submitted = new Set(rows.map((row) => row.employee_key || normalizeName(row.employee)));
   return employees.filter((name) => !submitted.has(normalizeName(name)));
+}
+
+export function sumMetrics(rows) {
+  const totals = {};
+  for (const field of METRIC_FIELDS) totals[field] = 0;
+  for (const row of rows) {
+    for (const field of METRIC_FIELDS) {
+      totals[field] += Number(row[field] || 0);
+    }
+  }
+  return totals;
+}
+
+export function buildTotals(reportDate, rows, missing, expectedCount) {
+  const header = [`<b>Сводный отчёт за ${formatRuDate(reportDate)}</b>`];
+  header.push(expectedCount ? `Сдали ${rows.length} из ${expectedCount}` : `Сдали ${rows.length}`);
+  if (missing.length) header.push("Не сдали: " + missing.map(escapeHtml).join(", "));
+  else if (expectedCount && rows.length >= expectedCount) header.push("Не сдали: никого");
+  if (!rows.length) {
+    return `${header.join("\n")}\n\nОтчётов пока нет.`;
+  }
+  const totals = sumMetrics(rows);
+  const lines = ["<b>Итого</b>"];
+  for (const field of METRIC_FIELDS) {
+    lines.push(formatMetricLine(field, totals[field]));
+  }
+  const submitted = rows.map((row) => escapeHtml(row.employee)).join(", ");
+  lines.push("", `Сдали: ${submitted}`);
+  return `${header.join("\n")}\n\n${lines.join("\n")}`;
 }
 
 export function buildSummary(reportDate, rows, missing, expectedCount) {
@@ -338,14 +367,16 @@ async function telegramCall(token, method, payload) {
 }
 
 const BOT_COMMANDS = [
-  { command: "start", description: "Меню и привязка чата" },
-  { command: "today", description: "Сводка за сегодня" },
+  { command: "svod", description: "Сводный отчёт: суммы и кто не сдал" },
+  { command: "today", description: "Отчёты сотрудников за сегодня" },
   { command: "missing", description: "Кто не сдал" },
-  { command: "date", description: "Сводка за дату: /date 06.10" },
+  { command: "date", description: "Отчёты за дату: /date 06.10" },
+  { command: "start", description: "Меню и привязка чата" },
 ];
 
 const MENU_KEYBOARD = {
   keyboard: [
+    [{ text: "Сводный" }],
     [{ text: "Сегодня" }, { text: "Не сдали" }],
     [{ text: "За дату" }, { text: "Помощь" }],
   ],
@@ -354,6 +385,7 @@ const MENU_KEYBOARD = {
 };
 
 const TEXT_ALIASES = {
+  сводный: "/svod",
   сегодня: "/today",
   "не сдали": "/missing",
   "за дату": "/date",
@@ -424,6 +456,12 @@ async function summaryFor(env, reportDate) {
   return buildSummary(reportDate, rows, missingEmployees(rows, employees), employees.length);
 }
 
+async function totalsFor(env, reportDate) {
+  const rows = await reportsFor(env, reportDate);
+  const employees = splitEmployees(env.EMPLOYEES);
+  return buildTotals(reportDate, rows, missingEmployees(rows, employees), employees.length);
+}
+
 async function handleCommand(env, chatId, text) {
   const allowed = env.TELEGRAM_CHAT_ID;
   text = normalizeIncomingText(text);
@@ -437,9 +475,10 @@ async function handleCommand(env, chatId, text) {
     }
     return (
       "Бот сводки отчётов. Команды в меню слева и на кнопках внизу.\n" +
-      "/today — сводка за сегодня\n" +
+      "/svod — сводный отчёт: суммы и кто не сдал\n" +
+      "/today — отчёты каждого сотрудника\n" +
       "/missing — кто не сдал\n" +
-      "/date 06.10 — сводка за дату"
+      "/date 06.10 — отчёты за дату"
     );
   }
   if (allowed && chatId !== allowed) return "Нет доступа.";
@@ -447,6 +486,14 @@ async function handleCommand(env, chatId, text) {
   const command = commandRaw.split("@", 1)[0].toLowerCase();
   const argument = rest.join(" ").trim();
   const today = moscowDateIso();
+  if (command === "/svod" || command === "/summary" || command === "/totals") {
+    if (!argument) return totalsFor(env, today);
+    try {
+      return totalsFor(env, parseCommandDate(argument, today));
+    } catch {
+      return "Не понял дату. Пример: /svod 06.10 или /svod 06.10.2026";
+    }
+  }
   if (command === "/today") return summaryFor(env, today);
   if (command === "/missing") {
     const employees = splitEmployees(env.EMPLOYEES);
@@ -464,7 +511,7 @@ async function handleCommand(env, chatId, text) {
       return "Не понял дату. Пример: /date 06.10 или /date 06.10.2026";
     }
   }
-  return "Неизвестная команда. Доступны /today, /missing, /date.";
+  return "Неизвестная команда. Доступны /svod, /today, /missing, /date.";
 }
 
 async function handleForms(request, env) {
@@ -518,6 +565,7 @@ async function handleTelegram(request, env) {
 async function sendDailySummary(env) {
   const today = moscowDateIso();
   const chatId = await managerChatId(env);
+  await sendTelegram(env, chatId, await totalsFor(env, today));
   await sendTelegram(env, chatId, await summaryFor(env, today));
   await env.REPORTS.put("settings:summary_sent_date", today);
 }

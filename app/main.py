@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from app.config import Settings
 from app.db import Store
 from app.parser import ParseError, parse_report
-from app.summary import build_summary, build_supplement, format_ru_date
+from app.summary import build_summary, build_supplement, build_totals, format_ru_date
 from app.telegram import TelegramBot, start_polling
 
 log = logging.getLogger(__name__)
@@ -41,8 +41,14 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
         missing = store.missing_for(report_date, settings.employees)
         return build_summary(report_date, rows, missing, len(settings.employees))
 
+    def totals_for(report_date: date) -> str:
+        rows = store.reports_for(report_date)
+        missing = store.missing_for(report_date, settings.employees)
+        return build_totals(report_date, rows, missing, len(settings.employees))
+
     def send_daily_summary() -> None:
         today = datetime.now(settings.tz).date()
+        send_to_manager(totals_for(today))
         send_to_manager(summary_for(today))
         store.set_setting("summary_sent_date", today.isoformat())
 
@@ -67,14 +73,24 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
                 store.set_setting("telegram_chat_id", chat_id)
             return (
                 "Бот сводки отчётов.\n"
-                "/today — сводка за сегодня\n"
+                "/svod — сводный отчёт: суммы и кто не сдал\n"
+                "/today — отчёты каждого сотрудника\n"
                 "/missing — кто не сдал\n"
-                "/date 06.10 — сводка за дату"
+                "/date 06.10 — отчёты за дату"
             )
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].lower()
         if command == "/today":
             return summary_for(datetime.now(settings.tz).date())
+        if command in {"/svod", "/summary", "/totals"}:
+            raw = argument.strip()
+            if not raw:
+                return totals_for(datetime.now(settings.tz).date())
+            try:
+                report_date = _parse_command_date(raw, datetime.now(settings.tz).date())
+            except ValueError:
+                return "Не понял дату. Пример: /svod 06.10 или /svod 06.10.2026"
+            return totals_for(report_date)
         if command == "/missing":
             today = datetime.now(settings.tz).date()
             missing = store.missing_for(today, settings.employees)
@@ -92,7 +108,7 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
             except ValueError:
                 return "Не понял дату. Пример: /date 06.10 или /date 06.10.2026"
             return summary_for(report_date)
-        return "Неизвестная команда. Доступны /today, /missing, /date."
+        return "Неизвестная команда. Доступны /svod, /today, /missing, /date."
 
     bot = TelegramBot(settings.telegram_bot_token, settings.telegram_chat_id, handle_command)
 

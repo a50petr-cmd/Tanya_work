@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   afterDeadline,
   buildSummary,
+  buildTotals,
   chkdBlago,
   chkdSberhealth,
   formatMetricLine,
@@ -81,8 +82,58 @@ test("late report is after 18:00 Moscow", () => {
 });
 
 test("keyboard labels map to commands", () => {
+  assert.equal(normalizeIncomingText("Сводный"), "/svod");
   assert.equal(normalizeIncomingText("Сегодня"), "/today");
   assert.equal(normalizeIncomingText("Не сдали"), "/missing");
   assert.equal(normalizeIncomingText("За дату"), "/date");
   assert.equal(normalizeIncomingText("Помощь"), "/start");
+});
+
+test("totals sum employee metrics and apply formulas", () => {
+  const text = buildTotals(
+    "2026-10-07",
+    [
+      {
+        employee: "Алексеев",
+        report_date: "2026-10-07",
+        meetings_ab: 2,
+        stars: 3,
+        passives: 2,
+        pl_credit: 3,
+        issues: 4,
+        leasing: 2,
+        salary: 4,
+        te: 2,
+        knk: 4,
+        chkd_blago: 10,
+        chkd_sberhealth: 12,
+        chkd_accreds: 34,
+      },
+      {
+        employee: "Соколова Анна",
+        report_date: "2026-10-07",
+        meetings_ab: 4,
+        stars: 1,
+        passives: 0,
+        pl_credit: 1,
+        issues: 0,
+        leasing: 1,
+        salary: 0,
+        te: 0,
+        knk: 2,
+        chkd_blago: 10,
+        chkd_sberhealth: 10,
+        chkd_accreds: 0,
+      },
+    ],
+    ["Иванов"],
+    10,
+  );
+  assert.match(text, /Сводный отчёт за 07.10.2026/);
+  assert.match(text, /Сдали 2 из 10/);
+  assert.match(text, /Не сдали: Иванов/);
+  assert.match(text, /Встречи AB: 6/);
+  assert.match(text, /ЧКД Благо: 13,33 \(введено 20\)/);
+  assert.match(text, /ЧКД СберЗдоровье: 14,30 \(введено 22\)/);
+  assert.match(text, /Сдали: Алексеев, Соколова Анна/);
 });
