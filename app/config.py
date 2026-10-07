@@ -19,6 +19,7 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     forms_webhook_secret: str
+    form_page_token: str
     employees: tuple[str, ...]
     summary_hour: int
     summary_minute: int
@@ -37,6 +38,7 @@ class Settings:
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
             forms_webhook_secret=os.getenv("FORMS_WEBHOOK_SECRET", "").strip(),
+            form_page_token=os.getenv("FORM_PAGE_TOKEN", "").strip(),
             employees=_split_employees(os.getenv("EMPLOYEES", "")),
             summary_hour=int(os.getenv("SUMMARY_HOUR", "18")),
             summary_minute=int(os.getenv("SUMMARY_MINUTE", "0")),

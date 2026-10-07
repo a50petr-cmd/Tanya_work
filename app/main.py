@@ -8,14 +8,20 @@ from datetime import date, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.config import Settings
 from app.db import Store
 from app.parser import ParseError, parse_report
 from app.summary import build_summary, build_supplement, build_totals, format_ru_date
 from app.telegram import TelegramBot, start_polling
+from app.webform import (
+    check_form_key,
+    form_access_token,
+    payload_from_form,
+    render_report_page,
+)
 
 log = logging.getLogger(__name__)
 
@@ -121,21 +127,7 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/webhook/forms")
-    async def forms_webhook(
-        request: Request,
-        x_webhook_secret: str | None = Header(default=None),
-        x_delivery_id: str | None = Header(default=None),
-    ) -> JSONResponse:
-        if settings.forms_webhook_secret:
-            if x_webhook_secret != settings.forms_webhook_secret:
-                raise HTTPException(status_code=401, detail="invalid secret")
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="invalid json") from exc
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="json object expected")
+    def save_report_from_payload(payload: dict, *, delivery: str | None = None) -> dict:
         try:
             report = parse_report(payload, tz=settings.tz)
         except ParseError as exc:
@@ -154,9 +146,78 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
                 send_to_manager(build_supplement(row, submitted_at, settings.tz))
             except Exception:
                 log.exception("Failed to send late report to Telegram")
-        return JSONResponse(
-            {"ok": True, "employee": report.employee, "date": report.report_date.isoformat(), "delivery": x_delivery_id}
+        return {
+            "ok": True,
+            "employee": report.employee,
+            "date": report.report_date.isoformat(),
+            "delivery": delivery,
+        }
+
+    @app.get("/report", response_class=HTMLResponse)
+    def report_form(key: str | None = Query(default=None)) -> HTMLResponse:
+        if not check_form_key(settings, key):
+            raise HTTPException(status_code=403, detail="invalid or missing key")
+        today = datetime.now(settings.tz).date()
+        token = form_access_token(settings)
+        html_page = render_report_page(
+            employees=settings.employees,
+            default_date=today,
+            access_key=token,
         )
+        return HTMLResponse(html_page)
+
+    @app.post("/report/submit", response_class=HTMLResponse)
+    async def report_submit(request: Request) -> HTMLResponse:
+        form = await request.form()
+        data = {k: str(v) for k, v in form.items()}
+        if not check_form_key(settings, data.get("access_key")):
+            raise HTTPException(status_code=403, detail="invalid or missing key")
+        try:
+            save_report_from_payload(payload_from_form(data))
+        except HTTPException as exc:
+            today = datetime.now(settings.tz).date()
+            token = form_access_token(settings)
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            page = render_report_page(
+                employees=settings.employees,
+                default_date=today,
+                access_key=token,
+                error=detail,
+            )
+            return HTMLResponse(page, status_code=exc.status_code)
+        today = datetime.now(settings.tz).date()
+        token = form_access_token(settings)
+        page = render_report_page(
+            employees=settings.employees,
+            default_date=today,
+            access_key=token,
+            success="Отчёт сохранён. Спасибо! Можно отправить ещё один или закрыть страницу.",
+        )
+        return HTMLResponse(page)
+
+    @app.get("/")
+    def root(key: str | None = Query(default=None)):
+        if check_form_key(settings, key):
+            return RedirectResponse(url=f"/report?key={key}" if key else "/report", status_code=302)
+        return RedirectResponse(url="/health", status_code=302)
+
+    @app.post("/webhook/forms")
+    async def forms_webhook(
+        request: Request,
+        x_webhook_secret: str | None = Header(default=None),
+        x_delivery_id: str | None = Header(default=None),
+    ) -> JSONResponse:
+        if settings.forms_webhook_secret:
+            if x_webhook_secret != settings.forms_webhook_secret:
+                raise HTTPException(status_code=401, detail="invalid secret")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid json") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="json object expected")
+        body = save_report_from_payload(payload, delivery=x_delivery_id)
+        return JSONResponse(body)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

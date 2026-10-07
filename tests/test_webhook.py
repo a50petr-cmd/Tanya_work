@@ -12,6 +12,7 @@ def _settings(tmp_path, **overrides) -> Settings:
         telegram_bot_token="",
         telegram_chat_id="100",
         forms_webhook_secret="secret",
+        form_page_token="",
         employees=("Иванов", "Соколова Анна"),
         summary_hour=18,
         summary_minute=0,
