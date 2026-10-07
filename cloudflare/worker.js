@@ -435,6 +435,47 @@ async function saveReport(env, report, submittedAtIso) {
   return row;
 }
 
+export function reportStorageKey(reportDate, employeeName) {
+  return `report:${reportDate}:${normalizeName(employeeName)}`;
+}
+
+async function listReportKeys(env, prefix) {
+  const keys = [];
+  let cursor;
+  do {
+    const listed = await env.REPORTS.list({ prefix, cursor });
+    keys.push(...listed.keys.map((item) => item.name));
+    cursor = listed.list_complete ? undefined : listed.cursor;
+  } while (cursor);
+  return keys;
+}
+
+/** Удаляет сохранённые отчёты в KV (тестовые или за день). */
+export async function clearReports(env, { reportDate, employeeName, all } = {}) {
+  const deleted = [];
+  if (all) {
+    for (const name of await listReportKeys(env, "report:")) {
+      await env.REPORTS.delete(name);
+      deleted.push(name);
+    }
+    return deleted;
+  }
+  if (!reportDate) throw new Error("reportDate required unless all=true");
+  if (employeeName) {
+    const key = reportStorageKey(reportDate, employeeName);
+    if (await env.REPORTS.get(key)) {
+      await env.REPORTS.delete(key);
+      deleted.push(key);
+    }
+    return deleted;
+  }
+  for (const name of await listReportKeys(env, `report:${reportDate}:`)) {
+    await env.REPORTS.delete(name);
+    deleted.push(name);
+  }
+  return deleted;
+}
+
 async function reportsFor(env, reportDate) {
   const listed = await env.REPORTS.list({ prefix: `report:${reportDate}:` });
   const rows = [];
@@ -511,6 +552,32 @@ async function handleCommand(env, chatId, text) {
       return "Не понял дату. Пример: /date 06.10 или /date 06.10.2026";
     }
   }
+  if (command === "/clear") {
+    const argLower = argument.toLowerCase();
+    try {
+      let deleted;
+      if (argLower === "all" || argLower === "все") {
+        deleted = await clearReports(env, { all: true });
+      } else if (!argument) {
+        deleted = await clearReports(env, { reportDate: today });
+      } else {
+        const parts = argument.trim().split(/\s+/);
+        const date = parseCommandDate(parts[0], today);
+        const employee = parts.length > 1 ? parts.slice(1).join(" ") : null;
+        deleted = await clearReports(env, { reportDate: date, employeeName: employee });
+      }
+      if (!deleted.length) return "Нечего удалять — таких отчётов в базе нет.";
+      return `Удалено записей: ${deleted.length}.\n${deleted.join("\n")}`;
+    } catch {
+      return (
+        "Очистка отчётов:\n" +
+        "/clear — все за сегодня\n" +
+        "/clear 07.10 — все за дату\n" +
+        "/clear 07.10 Алексеев — один сотрудник\n" +
+        "/clear all — все отчёты за все дни"
+      );
+    }
+  }
   return "Неизвестная команда. Доступны /svod, /today, /missing, /date.";
 }
 
@@ -570,6 +637,34 @@ async function sendDailySummary(env) {
   await env.REPORTS.put("settings:summary_sent_date", today);
 }
 
+async function adminClearReports(request, env) {
+  const url = new URL(request.url);
+  const secret = env.FORMS_WEBHOOK_SECRET;
+  if (secret && url.searchParams.get("secret") !== secret) {
+    return Response.json({ detail: "invalid secret" }, { status: 401 });
+  }
+  const all = url.searchParams.get("all") === "1" || url.searchParams.get("all") === "true";
+  const resetSummary =
+    url.searchParams.get("reset_summary") === "1" || url.searchParams.get("reset_summary") === "true";
+  let reportDate = url.searchParams.get("date") || "";
+  const employee = url.searchParams.get("employee") || "";
+  try {
+    if (!all) {
+      if (!reportDate) reportDate = moscowDateIso();
+      else reportDate = parseCommandDate(reportDate, moscowDateIso());
+    }
+    const deleted = await clearReports(env, {
+      all,
+      reportDate: all ? undefined : reportDate,
+      employeeName: employee || undefined,
+    });
+    if (resetSummary) await env.REPORTS.delete("settings:summary_sent_date");
+    return Response.json({ ok: true, deleted_count: deleted.length, deleted });
+  } catch (error) {
+    return Response.json({ ok: false, detail: String(error.message || error) }, { status: 400 });
+  }
+}
+
 async function setupTelegram(request, env) {
   const url = new URL(request.url);
   const secret = env.FORMS_WEBHOOK_SECRET;
@@ -607,6 +702,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/setup-telegram") {
       return setupTelegram(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/admin/clear-reports") {
+      return adminClearReports(request, env);
     }
     if (request.method === "POST" && url.pathname === "/webhook/forms") {
       return handleForms(request, env);

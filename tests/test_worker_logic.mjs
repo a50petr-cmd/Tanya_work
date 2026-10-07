@@ -10,7 +10,13 @@ import {
   formatMetricLine,
   normalizeIncomingText,
   parseReport,
+  reportStorageKey,
 } from "../cloudflare/worker.js";
+
+test("report KV keys normalize employee names", () => {
+  assert.equal(reportStorageKey("2026-10-07", "Алексеев"), "report:2026-10-07:алексеев");
+  assert.equal(reportStorageKey("2026-10-07", "  Иванов  Петр "), "report:2026-10-07:иванов петр");
+});
 
 test("formulas match the agreed examples", () => {
   assert.equal(chkdBlago(10), 6.67);
