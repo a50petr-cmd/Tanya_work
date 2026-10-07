@@ -1,0 +1,10 @@
+name = "sberteam-reports"
+main = "worker.js"
+compatibility_date = "2026-10-06"
+workers_dev = true
+
+[triggers]
+crons = ["0 15 * * *"]
+
+[vars]
+EMPLOYEES = ""
