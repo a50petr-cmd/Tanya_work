@@ -366,11 +366,15 @@ async function telegramCall(token, method, payload) {
   return body;
 }
 
+export const WORKER_VERSION = "20261007-clear-keys";
+
 const BOT_COMMANDS = [
   { command: "svod", description: "Сводный отчёт: суммы и кто не сдал" },
   { command: "today", description: "Отчёты сотрудников за сегодня" },
   { command: "missing", description: "Кто не сдал" },
   { command: "date", description: "Отчёты за дату: /date 06.10" },
+  { command: "clear", description: "Удалить отчёты (тест): /clear, /clear all" },
+  { command: "keys", description: "Сколько отчётов лежит в базе" },
   { command: "start", description: "Меню и привязка чата" },
 ];
 
@@ -379,6 +383,7 @@ const MENU_KEYBOARD = {
     [{ text: "Сводный" }],
     [{ text: "Сегодня" }, { text: "Не сдали" }],
     [{ text: "За дату" }, { text: "Помощь" }],
+    [{ text: "Очистить сегодня" }, { text: "Ключи в базе" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -390,6 +395,8 @@ const TEXT_ALIASES = {
   "не сдали": "/missing",
   "за дату": "/date",
   помощь: "/start",
+  "очистить сегодня": "/clear",
+  "ключи в базе": "/keys",
 };
 
 export function normalizeIncomingText(text) {
@@ -477,14 +484,31 @@ export async function clearReports(env, { reportDate, employeeName, all } = {}) 
 }
 
 async function reportsFor(env, reportDate) {
-  const listed = await env.REPORTS.list({ prefix: `report:${reportDate}:` });
   const rows = [];
-  for (const key of listed.keys) {
-    const raw = await env.REPORTS.get(key.name);
+  for (const keyName of await listReportKeys(env, `report:${reportDate}:`)) {
+    const raw = await env.REPORTS.get(keyName);
     if (raw) rows.push(JSON.parse(raw));
   }
   rows.sort((a, b) => a.employee.localeCompare(b.employee, "ru"));
   return rows;
+}
+
+async function keysReport(env) {
+  const today = moscowDateIso();
+  const todayKeys = await listReportKeys(env, `report:${today}:`);
+  const allKeys = await listReportKeys(env, "report:");
+  let msg =
+    `Версия воркера: ${WORKER_VERSION}\n` +
+    `Дата по Москве: ${formatRuDate(today)}\n` +
+    `Отчётов за сегодня в базе: ${todayKeys.length}`;
+  if (todayKeys.length) msg += `\n${todayKeys.join("\n")}`;
+  msg += `\n\nВсего ключей report:* — ${allKeys.length}`;
+  if (allKeys.length) {
+    const preview = allKeys.length > 25 ? allKeys.slice(0, 25) : allKeys;
+    msg += ":\n" + preview.join("\n");
+    if (allKeys.length > 25) msg += `\n… и ещё ${allKeys.length - 25}`;
+  }
+  return msg;
 }
 
 async function managerChatId(env) {
@@ -515,11 +539,14 @@ async function handleCommand(env, chatId, text) {
       console.error("setup bot menu failed", error);
     }
     return (
-      "Бот сводки отчётов. Команды в меню слева и на кнопках внизу.\n" +
+      `Бот сводки отчётов (${WORKER_VERSION}). Команды в меню и на кнопках.\n` +
       "/svod — сводный отчёт: суммы и кто не сдал\n" +
       "/today — отчёты каждого сотрудника\n" +
       "/missing — кто не сдал\n" +
-      "/date 06.10 — отчёты за дату"
+      "/date 06.10 — отчёты за дату\n" +
+      "/clear — удалить тестовые отчёты за сегодня (кнопка «Очистить сегодня»)\n" +
+      "/clear all — удалить все отчёты за все дни\n" +
+      "/keys — что сейчас лежит в базе"
     );
   }
   if (allowed && chatId !== allowed) return "Нет доступа.";
@@ -552,6 +579,7 @@ async function handleCommand(env, chatId, text) {
       return "Не понял дату. Пример: /date 06.10 или /date 06.10.2026";
     }
   }
+  if (command === "/keys") return keysReport(env);
   if (command === "/clear") {
     const argLower = argument.toLowerCase();
     try {
@@ -578,7 +606,7 @@ async function handleCommand(env, chatId, text) {
       );
     }
   }
-  return "Неизвестная команда. Доступны /svod, /today, /missing, /date.";
+  return "Неизвестная команда. Доступны /svod, /today, /missing, /date, /clear, /keys.";
 }
 
 async function handleForms(request, env) {
@@ -623,7 +651,13 @@ async function handleTelegram(request, env) {
   if (!text || !chatId) return Response.json({ ok: true });
   const reply = await handleCommand(env, chatId, text);
   if (reply) {
-    const showMenu = normalizeIncomingText(text).startsWith("/start");
+    const normalized = normalizeIncomingText(text);
+    const showMenu =
+      normalized.startsWith("/start") ||
+      normalized.startsWith("/clear") ||
+      normalized.startsWith("/keys") ||
+      normalized === "/clear" ||
+      normalized === "/keys";
     await sendTelegram(env, chatId, reply, showMenu ? { reply_markup: MENU_KEYBOARD } : {});
   }
   return Response.json({ ok: true });
@@ -698,7 +732,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ status: "ok" });
+      return Response.json({ status: "ok", version: WORKER_VERSION });
     }
     if (request.method === "GET" && url.pathname === "/setup-telegram") {
       return setupTelegram(request, env);
